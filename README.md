@@ -7,6 +7,8 @@ The interface is the same as a RX01 drive, but its not software compatable.
 
 32768 blocks of 512 bytes (16 meg)
 
+Transfer is 512 byte blocks (not 128)
+
 No interleave, no track skew
 
 Included is a modified DX driver called SD (for Solidstate Disk) That has been tested with RT-11 V5.03.
