@@ -1,0 +1,458 @@
+.TITLE  SD
+; SD.MAC is a disk handler that uses a standard RXV11 interface
+; to support large disks. The disk interface is similar to the
+; RX01 but the disk has a capacity of 100000(octal) blocks (16 MB), and
+; does block-sized transfers (512 bytes) instead of 128 bytes,
+; It does not use interleaving.
+;
+; Credit for this driver belongs to Pete McCollum.
+; It is his XX.MAC driver with symbols changed and some edits. 
+; Most of this code is from RT-11 4.0 DX.MAC
+; It has been tested with RT-11 V5.03
+; 
+; joe lang 2018 I claim no copyright on this code
+;
+;
+.SBTTL  SD SOLIDSTATE DISK HANDLER
+;
+ELSD    == 1
+.SBTTL  MACROS AND DEFINITIONS
+;
+.MCALL  .DRDEF
+;
+.MACRO  .ASSUME A1,CND,A2
+.IF CND <A1>-<A2>
+.IFF
+.ERROR
+.ENDC
+.ENDM   .ASSUME
+;
+.MACRO .BR TO
+.IF DF  TO
+.IF NE  .-<TO>
+.ERROR
+.ENDC
+.ENDC
+.ENDM   .BR
+;
+	.DRDEF  SD,377,FILST$!SD$COD,100000,177170,264
+;
+.IIF NDF SDT$O, SDT$O=0
+SDNREG  = 3
+SPFUNC  = 100000
+JSW     = 44
+.IIF NDF SD$VC2, SD$VC2 == 270
+.IIF NDF SD$CS2, SD$CS2 == 177174
+;
+CSGO    =      1
+CSUNIT  =     20
+CSDONE  =     40
+CSINT   =    100
+CSTR    =    200
+CSRX02  =   4000
+CSINIT  =  40000
+CSERR   = 100000
+;
+CSFBUF  = 0*2
+CSEBUF  = 1*2
+CSWRT   = 2*2
+CSRD    = 3*2
+CSRDST  = 5*2
+CSWRTD  = 6*2
+CSMAIN  = 7*2
+;
+.ASSUME CSRD&2 NE 0
+.ASSUME CSWRT&2 EQ 0
+.ASSUME CSWRTD&2 EQ 0
+;
+ESCRC   =      1
+ESPAR   =      2
+ESID    =      4
+ESDD    =    100
+ESDRY   ==   200
+;
+KISAR1  = 172342
+;
+.SBTTL  INSTALL CHECKS
+
+.ASECT
+.       = 200
+	NOP
+	BIT     #CSRX02,@176	;is it RX02 interface?
+	BNE     1$
+	TST     (PC)+
+1$:     SEC
+	RTS     PC
+;
+.SBTTL  DRVR REQ ENTRY
+
+.ENABL  LSB
+	.DRBEG  SD
+	MOV     #1,(PC)+	; set the retry count
+SDTRY:   .WORD  1
+	MOV     SDCQE,R3	; get ptr to queue
+	MOV     (R3)+,R5	; get block #
+	MOV     #CSRD!CSGO,R4	; assume 'read'
+	MOVB    (R3)+,R1	; get SPFUN
+	MOVB    (R3)+,R0	; get unit #
+	ASRB    R0		; chk for odd unit #
+	BCC     1$		; even(0)
+	BIS     #CSUNIT,R4	; odd(1)
+1$:
+;
+.IF EQ  SDT$O
+	BITB    #6/2,R0		; chk for unit > 2
+	BNE     SDERR
+.IFF
+	MOV     #SD$CSR,SDCSA	; get CSR
+	ASRB    R0		; second controller?
+	BCC     2$
+	MOV     #SD$CS2,SDCSA	;  yes.
+2$:     ASRB    R0		;  no. unit > 3?
+	BCS     SDERR
+.ENDC
+;
+	MOV     (R3)+,R0	; get user's buff. addr.
+	MOV     (R3)+,R2	; get word count
+	BPL     3$		; plus means 'read'
+	CMPB    -(R4),-(R4)	; minus - change cmd to 'write'
+.ASSUME CSWRT   EQ      CSRD-2
+	NEG     R2		; make word cnt positive
+3$:     ASL     R1		; double the SPFUN code
+	ADD     PC,R1		; pic reference (?)
+	ADD     CHGTBL-.(R1),R4
+	MOV     R4,SDFUN2	; save func. code and spfun flag
+	ASL     R2		; change wd cnt to byte cnt
+;
+; block is in R5
+; byte count is in R2
+; buffer address is in R0
+;
+8$:     MOV     R0,(PC)+	; save buffer address
+BUFRAD:  .WORD  0
+	MOV     R5,BLOCKL	; save starting block
+	MOV     R2,(PC)+	; save byte count
+BYTCNT:  .WORD  0
+;
+.IF NE  MMG$T
+	TST     (R3)+		; skip the completion routine addr.
+	MOV     @R3,(PC)+
+PARVAL:  .WORD  0
+.ENDC
+;
+	.BR     SDINIT
+;
+.DSABL  LSB
+;
+.SBTTL  START XFER OR RETRY
+
+.ENABL  LSB
+;
+SDINIT: MOV     #100000,SDIRTN	; set return after initial interrupt
+	MOV     SDCSA,R4	; get the CSR
+	BR      SDIENB		; go interrupt, rtn to 1$ later
+;
+1$:     BIT     #2,R0		; Read or Write ?
+	BNE     3$		; read.
+2$:     JSR     R0,SILOFE	; write.
+;
+	.WORD  CSFBUF!CSGO	;command
+	MOVB   (R2)+,@R5	;move byte
+	MOV    R1,@R5		;discard byte
+;
+
+3$:     MOVB    BLOCKH,R2	; get hi byte
+5$:     MOV     R0,@R4		; send cmd
+6$:     TSTB    @R4		; wait for TR
+	BEQ     6$
+	BPL     SDRTRY		; Done w/o TR - error
+	MOVB    R2,@R5		; send hi byte of BLOCK
+7$:     TSTB    @R4		; wait for TR
+	BEQ     7$
+	BPL     SDRTRY		; Done w/o TR - error
+	MOVB    (PC)+,@R5	; send lo byte of BLOCK
+BLOCKL  .BYTE  0		; lo byte
+BLOCKH: .BYTE  0		; hi byte
+;
+SDIENB: BIS     #CSINT,@R4	; set the interrupt request
+	RTS     PC
+;
+SDERR:  MOV     SDCQE,R4
+	BIS     #HDERR$,@-(R4)
+	BR      13$
+;
+	.DRAST  SD,5,SDABRT
+	.FORK   SDFBLK
+	MOV     (PC)+,R0
+SDFUN2: .WORD  0		; Read or Write cmd
+	MOV     #512.,R3	; block size
+	MOV     (PC)+,R4	; get CSR addr
+SDCSA:  .WORD  SD$CSR
+	MOV     R4,R5		; R5 will become DB reg
+	TST     (R5)+
+	BMI     SDRTRY
+	ASL     (PC)+
+SDIRTN: .WORD  0		; offset to int. continuation
+	BCS     1$
+	BIT     #2,R0
+	BEQ     10$
+9$:     JSR     R0,SILOFE	; Read
+;
+	.WORD  CSEBUF!CSGO	;command
+	MOVB   @R5,(R2)+	;move byte
+	MOV    @R5,R2		;discard byte
+;
+10$:    INC     BLOCKL		; return here after Write
+11$:
+;
+.IF EQ  MMG$T
+	ADD     R3,BUFRAD	; update buff. addr.
+.IFF
+	ADD     #2,PARVAL
+.ENDC
+;
+	SUB     R3,BYTCNT	; reduce the amount left
+	BHI     1$		; loop if not done
+	CLR     BYTCNT		; done.
+12$:
+;
+.IF NE  ERL$G
+	MOV     #SD$COD*400+377,R4
+	MOV     SDCQE,R5
+	JSR     PC,@$ELPTR
+.ENDC
+;
+13$:    CLR     @SDCSA
+;
+14$:    .DRFIN  SD
+
+SDABRT: MOV     #CSINIT,@SDCSA
+	CLR     SDFBLK+2
+	BR      14$
+;
+.DSABL  LSB
+;
+.IF NE  SDT$O
+	.DRVTB  SD,SD$VEC,SDINT
+	.DRVTB  ,SD$VC2,SDINT
+.ENDC
+;
+SDRTRY:
+;
+; Error logging.
+.IF NE  ERL$G
+	MOV     PC,R3
+	ADD     #SDRBUF-.,R3
+	MOV     R3,R2
+	MOV     @R4,(R3)+
+	MOV     @R5,(R3)+
+	MOV     #CSMAIN!CSGO,@R4
+1$:     BIT     #CSDONE,@R4
+	BEQ     1$
+	MOV     @R5,@R3
+	MOV     #RETRY*400+SDNREG,R3
+	MOV     #SD$COD*400,R4
+	BISB    SDTRY,R4
+	DECB    R4
+	MOV     SDCQE,R5
+	JSR     PC,@$ELPTR
+	MOV     SDCSA,R4
+.ENDC
+;
+	DEC     SDTRY			; should we retry?
+;
+.IF NE  MMG$T & SDT$O
+	BGT     2$
+	JMP     SDERR;
+;
+2$:
+.IFF
+	BLE     SDERR
+.ENDC
+;
+	MOV     #CSINIT,@R4		; init the drive
+	JMP     SDINIT
+;
+.SBTTL  FILL OR EMPTY
+
+SILOFE: MOV     (R0)+,@R4		; Fill or Empty cmd
+	MOV     (R0)+,3$		; MOV inst
+	MOV     (R0)+,5$		; sluff inst
+	MOV     BYTCNT,R1		; get byte count
+	BEQ     4$			; seek or 0-fill
+;
+.IF NE  MMG$T
+	MOV     @#KISAR1,-(SP)
+	MOV     PARVAL,@#KISAR1
+.ENDC
+;
+	CMP     R1,R3			; check byte cnt
+	BLOS    1$
+	MOV     R3,R1
+1$:     MOV     BUFRAD,R2
+;
+; This is the data-moving loop:
+2$:     TSTB    @R4			; wait for TR
+	BPL     2$
+3$:     HALT				; inst to MOV or discard
+	TSTB    @R4
+	DEC     R1			; done yet?
+	BNE     2$			; no
+;
+.IF NE  MMG$T
+	MOV     (SP)+,@#KISAR1
+.ENDC
+;
+; If the byte count is not on a block boundary, then we
+; must 'discard' the extra bytes.
+4$:     TSTB    @R4			; discard
+	BGT     6$			; wait for TR or Done
+	BEQ     4$
+5$:     HALT				; inst to discard
+	BR      4$
+;
+6$:     RTS     R0
+;
+.SBTTL  TABLES, FORK BLOCK, END OF DRIVER
+
+	.WORD   CSWRTD-CSRD+SPFUNC
+	.WORD   CSWRT-CSRD+SPFUNC
+	.WORD   CSRD-CSRD+SPFUNC
+CHGTBL: .WORD   0
+SDFBLK: .WORD   0,0,0,0
+;
+.IF NE  ERL$G
+SDRBUF: .BLKW   SDNREG
+.ENDC
+;
+;
+.SBTTL  BOOT BLOCK
+
+; Define the boot block (block 0).
+	.DRBOT  SD,BOOT1,READ
+;
+.	= SDBOOT+14
+	 .WORD  READS-SDBOOT
+	 .WORD  340
+	 .WORD  WAIT-SDBOOT
+	 .WORD  340
+;
+.	= SDBOOT+34
+; R0 contains the Unit # (0 or 1)
+; It is used to select read command.
+;
+BOOT1:  MOVB    UNITRD-SDBOOT(R0),RDCMD
+REETRY: MOV     @PC,SP			; init SP to 12702
+	MOV     #200,R2			; area to read boot to (cruft)
+	CLR     R0			; track 0 (cruft)
+	BR      B2$			; continue at B2$
+;
+.	= SDBOOT+56
+;Table of read commands indexed by unit number
+UNITRD: .BYTE   CSGO+CSRD
+	.BYTE   CSGO+CSRD+CSUNIT;READ FROM UNIT 1
+;
+;IOT wait for TR or done
+.	= SDBOOT+70
+WAIT:   TST     @R4			; wait for TR or Done
+	BEQ     WAIT
+	BMI     REETRY
+RTIRET: RTI
+;
+;BPT SD read block
+.	= SDBOOT+120
+READS:  MOV     #SD$CSR,R4
+	MOV     R4,R5			; R5 become DB reg
+	MOV     (PC)+,(R5)+		; MOV (Read)
+RDCMD:  .WORD   0
+	IOT				; call wait
+	MOV     R3,@R5			; send Block hi byte
+	IOT				; wait
+	MOV     R0,@R5			; send Block lo byte
+	IOT				; wait
+	MOV     #CSGO+CSEBUF,@R4	; Empty cmd
+BROFFS  =       READF-.
+RSD:    IOT				; wait
+	TSTB    @R4			; TR?
+	BPL     RTIRET
+	MOVB    @R5,(R2)+		; move a byte
+	DEC     R1			; chk byte count
+	BGT     RSD
+	CLR     R2
+	BR      RSD
+;
+; Continue boot startup.
+; The word count and sector are ignored (leftover from DX code).
+B2$:    MOV     SP,R1			; R1 = word count (a big #)
+	CLR	R3			; sector=0. R0 is already 0
+	;BPT				; call READS (cruft)
+	NOP
+;
+; Select unit 
+	INC	R0			; assume unit 1
+	BIT     #CSUNIT,RDCMD		; check unit ID
+	BNE     BOOT			; unit 1?
+	CLR     R0			; no, unit 0
+	BR      BOOT
+;
+READ:   MOV     (PC)+,@(PC)+		; modify boot code
+	.WORD  167
+	.WORD  RSD-SDBOOT
+	MOV     (PC)+,@(PC)+
+	.WORD  READF-RSD-4
+	.WORD  RSD-SDBOOT+2
+	MOV     #READ1-SDBOOT,@#B$READ
+	MOV     #TRWAIT-SDBOOT,@#20
+	CLR     @#JSW
+	TST     HRDBOT			; hardware boot?
+	BEQ     READ1
+	MOV     @#B$DEVU,R3
+	MOVB    UNITRD-SDBOOT(R3),RDCMD
+READ1:  				; R0 = block #
+	ASL     R1			; chg wd cnt to byte cnt
+1$:     MOV     R0,-(SP)		; save R0
+	MOV     R0,R3			; block num to R3
+	BIC     #177400,R0		; make a lo byte
+	SWAB    R3
+	BIC     #177400,R3		; make a hi byte
+	BPT				; calls READS
+	MOV     (SP)+,R0		; restore R0
+	INC     R0			; do next block
+	TST     R1			; chk byte count
+	BGT     1$			; done?
+	RETURN				; yes.
+;
+READF:  TST     @R4			; error, Done or TR?
+	BEQ     READF			; wait
+	BMI     BIOERR
+	TSTB    @R4			; TR or Done?
+	BPL     READFX			;  Done.
+	MOVB    @R5,(R2)+		; TR - get a byte
+	DEC     R1			; DEC byte count
+	BGT     READF			; more bytes?
+	MOV     #1,R2			; discard if needed
+	BR      READF
+;
+TRWAIT: TST     @R4
+	BMI     BIOERR
+	BEQ     TRWAIT
+
+READFX: RTI
+;
+.       = SDBOOT+606
+; Read 4 blocks into RAM at 1000
+BOOT:   MOV     #10000,SP		; set SP
+	MOV     R0,-(SP)		; save Unit #
+	MOV     #2,R0			; start at block 2
+	MOV     #<4*400>,R1		; byte count = 4 blocks
+	MOV     #1000,R2		; dest for boot
+	CLR     (PC)+			; HW boot
+HRDBOT:  .WORD  1
+	JSR     PC,READ
+	MOV     #READ1-SDBOOT,@#B$READ
+	MOV     #B$DNAM,@#B$DEVN
+	MOV     (SP)+,@#B$DEVU
+	JMP     @#B$BOOT
+;
+	.DREND  SD
+.END
