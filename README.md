@@ -17,4 +17,6 @@ The Idea for this project came from RX11emu By Peter McCollum. His project used 
 and ran on a PC.
 I use a standard RXV11 interface. (or RX11 but I can't test that) and runs on a small PC board using a ATmega32 AVR processor.
 
-The standard RX01 toggle in boot (or ROM) works.
+The standard RX01 toggle in boot works. It just emptys the silo to location zero and jumps to it.
+
+The standard boot ROM will not work. It sets the track=1+sector=1 and counts bytes. 
