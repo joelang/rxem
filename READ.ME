@@ -1,0 +1,87 @@
+Jumpers:
+
+There is only 1 jumper on the board. P5
+It supplies VCC to the IDE connector pin 20.
+Some CF adapter boards can use power from pin 20.
+
+
+Connecting the emulator:
+
+Power is applied to P1. It is pinned out the same as a standard floppy
+power connector only +5 and ground are used.
+
+The CF card adapter is connected to P3 (labled CF card) It's a 1:1 connection
+Pin one is toward the top of the board. (power connector at top)
+It's marked but hard to see with the connector in place.
+
+The RXV11 is connected to P4 (labled RXV11) This is also a 1:1 connection.
+The RXV11 connection can be confusing. Berg used letters not numbers on the 
+connector. If you hold a standard IDC connector next to the Berg you'll 
+see pin1 coresponds to pin VV. So line up pin1 and the cable stripe to
+the VV UU end of the connector on the RXV11. The drivers are all open collector.If you get it wrong it doesn't burnout drivers. It just doesn't work.
+  
+ 
+Building the system image:
+
+I used SIMH and the rtv53_rl.dsk image
+ 
+1) copy rtv53_rl.dsk to rtv53_sd.dsk
+
+2) run SIMH
+
+3)  attach rtv53_rl.dsk to DL0:
+
+4)  attach rtv53_sd.dsk to DL1:
+
+5)  attach SD.MAC to paper tape punch
+
+6) boot DL0:
+
+7) copy paper tape to file SD.MAC:
+
+R PIP
+SD.MAC=PC:
+^C
+
+8) assemble driver:
+
+MACRO SJ+SD.MAC/OBJECT:SD
+or
+MACRO XM+SD.MAC/OBJECT:SDX
+
+9) link handler:
+
+LINK/NOBITMAP/EXECUTE:SD.SYS SD
+or
+LINK/NOBITMAP/EXECUTE:SDX.SYS SDX
+
+10) copy SD.SYS or SDX.SYS to DL1:
+
+11) make DL1 bootable:
+
+COPY/BOOT:SD DL1:RT11SJ.SYS DL1:SD.SYS
+or
+COPY/BOOT:SD DL1:RT11XM.SYS DL1:SDX.SYS
+
+12) exit from SIMH
+
+13) copy image to CF card
+
+For Linux/MAC (You Windows guys are on your own. I don't do windows)
+
+dd if=rtv53_sd.dsk of=/dev/????
+The ???? is the cf card device name in the /dev directory
+Don't get that part wrong. dd will be happy to write over your system disk.
+You may need to "sudo" for this to work.
+
+14) there is no 14 you are done.
+
+Booting:
+
+The boot process is the same as booting a real RX01. The RX01 toggle in
+bootstrap works. The boot ROM does not. The ROM loads Track=1 Sector=1
+(block 257)  and does a read of 128 bytes... That will fail.  
+
+The toggle in boot does an empty buffer command and keeps taking bytes
+as long as rxem sets txrq. 
+ 
